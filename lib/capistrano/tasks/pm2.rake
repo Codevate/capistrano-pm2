@@ -1,27 +1,26 @@
 require 'json'
+require 'shellwords'
 
 namespace :pm2 do
-  desc 'Restart app gracefully'
-  task :restart do
+  desc 'Replace $CAP_CURRENT_PATH in the process file'
+  task :modify_process_file do
     on roles fetch(:pm2_roles) do
-      case app_status
-      when nil
-        info 'App is not registerd'
-        invoke 'pm2:start'
-      when 'stopped'
-        info 'App is stopped'
-        restart_app
-      when 'errored'
-        info 'App has errored'
-        restart_app
-      when 'online'
-        info 'App is online'
-        restart_app
+      execute "sed -i 's/$CAP_CURRENT_PATH/#{current_path.to_s.shellescape.gsub("/", "\\/")}/' #{release_path}/#{fetch(:pm2_process_file)}"
+    end
+  end
+
+  desc 'Start or gracefully reload app'
+  task :start_or_graceful_reload do
+    on roles fetch(:pm2_roles) do
+      within deploy_path do
+        with fetch(:pm2_env_variables) do
+          run_task :pm2, :startOrGracefulReload, "current/#{fetch(:pm2_process_file)}", "#{fetch(:pm2_start_params)}"
+        end
       end
     end
   end
 
-  before 'deploy:restart', 'pm2:restart'
+  task :restart => :start_or_graceful_reload
 
   desc 'List all pm2 applications'
   task :status do
@@ -30,7 +29,7 @@ namespace :pm2 do
 
   desc 'Start pm2 application'
   task :start do
-    run_task :pm2, :start, fetch(:pm2_app_command), "--name #{app_name} #{fetch(:pm2_start_params)}"
+    run_task :pm2, :start, app_name, "#{fetch(:pm2_start_params)}"
   end
 
   desc 'Stop pm2 application'
@@ -44,13 +43,13 @@ namespace :pm2 do
   end
 
   desc 'Show pm2 application info'
-  task :list do
+  task :show do
     run_task :pm2, :show, app_name
   end
 
   desc 'Watch pm2 logs'
   task :logs do
-    run_task :pm2, :logs
+    run_task :pm2, :logs, app_name
   end
 
   desc 'Save pm2 state so it can be loaded after restart'
@@ -64,38 +63,14 @@ namespace :pm2 do
   end
 
   def app_name
-    fetch(:pm2_app_name) || fetch(:application)
-  end
-
-  def app_status
-    within release_path do
-      with fetch(:pm2_env_variables) do
-        ps = JSON.parse(capture :pm2, :jlist, :'-s')
-
-        # find the process with our app name
-        ps.each do |child|
-          if child['name'] == app_name
-            # status: online, errored, stopped
-            return child['pm2_env']['status']
-          end
-        end
-
-        return nil
-      end
-    end
-  end
-
-  def restart_app
-    within release_path do
-      with fetch(:pm2_env_variables) do
-        execute :pm2, :restart, app_name
-      end
-    end
+    # stops rake from looking for tasks named after the arguments
+    ARGV.each { |a| task a.to_sym do ; end }
+    ARGV[2].to_s unless ARGV[2].nil?
   end
 
   def run_task(*args)
     on roles fetch(:pm2_roles) do
-      within fetch(:pm2_target_path, release_path) do
+      within deploy_path do
         with fetch(:pm2_env_variables) do
           execute *args
         end
@@ -106,10 +81,12 @@ end
 
 namespace :load do
   task :defaults do
-    set :pm2_app_command, 'main.js'
-    set :pm2_app_name, nil
+    set :pm2_process_file, 'ecosystem.config.js'
     set :pm2_start_params, ''
     set :pm2_roles, :all
     set :pm2_env_variables, {}
   end
 end
+
+after 'deploy:updated', 'pm2:modify_process_file'
+after 'deploy:published', 'pm2:restart' # current symlink has changed after this task

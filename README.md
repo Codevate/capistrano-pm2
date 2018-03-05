@@ -1,6 +1,4 @@
-# Capistrano::pm2 [![Gem Version](https://badge.fury.io/rb/capistrano-pm2.svg)](http://badge.fury.io/rb/capistrano-pm2)
-
-nodejs [pm2](https://github.com/Unitech/pm2) support for Capistrano 3.x
+nodejs [pm2](https://github.com/Unitech/pm2) 2.x support for Capistrano 3.x
 
 ## Installation
 
@@ -8,18 +6,12 @@ Add this line to your application's Gemfile:
 
 ```ruby
 gem 'capistrano', '~> 3.1.0'
-gem 'capistrano-pm2'
+gem 'capistrano-pm2', :git => 'https://github.com/codevate/capistrano-pm2.git'
 ```
 
 And then execute:
 
     $ bundle
-
-Or install it yourself as:
-
-    $ gem install capistrano-pm2
-
-## Usage
 
 Require in `Capfile` to use the default task:
 
@@ -27,39 +19,101 @@ Require in `Capfile` to use the default task:
 require 'capistrano/pm2'
 ```
 
-The task will run before `deploy:restart` as part of Capistrano's default deploy,
-or can be run in isolation with `cap production pm2:restart`. You can also invoke it in your `deploy.rb`:
-```ruby
-namespace :deploy do
-  desc 'Restart application'
-  task :restart do
-    # invoke 'npm:install'
-    invoke 'pm2:restart'
-  end
+Some tasks will automatically run as part of Capistrano's default deploy, here's how they fit into the [flow](http://capistranorb.com/documentation/getting-started/flow/):
 
-  after :publishing, :restart
-end
+```bash
+deploy
+  deploy:updated
+    [after]
+      pm2:modify_process_file
+  deploy:published
+    [after]
+      pm2:restart
 ```
 
+## Usage
 
-Available Tasks
+This gem follows the conventions outlined in ["Capistrano like deployments"](http://pm2.keymetrics.io/docs/tutorials/capistrano-like-deployments).
+
+The application process(es) to manage must be declared by a [process file](http://pm2.keymetrics.io/docs/usage/application-declaration). You can generate a sample process file with the following command:
+
+```bash
+pm2 ecosystem
+```
+
+### Process file
+
+Each application in the process file **must** have a `cwd` value that is an absolute path to the current deploy symlink, with the `script` path relative to it.
+This is so that PM2 always restarts the most recently deployed script. As a convenience, rather than hardcoding this path, use the value `$CAP_CURRENT_PATH`.
+
+Here's a basic example:
+
+```yml
+# process.yml
+apps:
+  - name: myapp
+    script: ./dist/index.js
+    cwd: $CAP_CURRENT_PATH
+```
+
 ```ruby
-cap pm2:delete                     # Delete pm2 application
-cap pm2:list                       # Show pm2 application info
-cap pm2:logs                       # Watch pm2 logs
-cap pm2:restart                    # Restart app gracefully
+# deploy.rb
+set :pm2_process_file, 'process.yml'
+set :deploy_to, '/home/ubuntu/myapp'
+```
+
+On each deploy, the gem will update the `cwd` option to the correct path:
+
+```yml
+# /home/ubuntu/myapp/releases/20180305210446/process.yml
+apps:
+  - name: myapp
+    script: ./dist/index.js
+    cwd: /home/ubuntu/myapp/current
+```
+
+```bash
+# pm2 show myapp
+│ name              │ myapp                                              │
+│ restarts          │ 0                                                  │
+│ uptime            │ 0                                                  │
+│ script path       │ /home/ubuntu/myapp/current/dist/index.js           │
+
+```
+
+Any changes to the process file outside of environment variables (see below) will require the relevant app(s) to be deleted before the next deploy to take effect:
+
+```bash
+cap <stage> pm2:delete myapp
+```
+
+### Environment variables
+
+By default, [PM2 doesn’t change process environment](http://pm2.keymetrics.io/docs/usage/environment/#while-restarting-reloading-a-process) while restarting. If you make changes to `env` in your process file, you'll need to add `--update-env` as a start param:
+
+```ruby
+# deploy.rb
+set :pm2_start_params, '--update-env'
+```
+
+### Available tasks
+
+```ruby
+cap pm2:delete <app_name>          # Delete pm2 application
+cap pm2:logs [<app_name>]          # Watch all pm2 logs (or provide an app name)
+cap pm2:restart <app_name>         # Restart app gracefully
 cap pm2:setup                      # Install pm2 via npm on the remote host
-cap pm2:start                      # Start pm2 application
+cap pm2:show <app_name>            # Show pm2 application info
+cap pm2:start <app_name>           # Start pm2 application
 cap pm2:status                     # List all pm2 applications
-cap pm2:stop                       # Stop pm2 application
+cap pm2:stop <app_name>            # Stop pm2 application
 cap pm2:save                       # Save pm2 state so it can be loaded after restart
 ```
 
-Configurable options:
+### Configurable options
+
 ```ruby
-set :pm2_app_command, 'main.js'                   # the main program
-set :pm2_app_name, fetch(:application)            # name for pm2 app
-set :pm2_target_path, -> { release_path }         # where to run pm2 commands
+set :pm2_process_file, 'ecosystem.config.js'      # the process file
 set :pm2_roles, :all                              # server roles where pm2 runs on
 set :pm2_env_variables, {}                        # default: env vars for pm2
 set :pm2_start_params, ''                         # pm2 start params see http://pm2.keymetrics.io/docs/usage/quick-start/#cheat-sheet
